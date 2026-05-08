@@ -223,7 +223,11 @@ export function initSchema(db: Database): void {
       target_type TEXT NOT NULL,
       target_id TEXT NOT NULL DEFAULT '',
       details_json TEXT NOT NULL DEFAULT '{}',
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      -- DDouns d2: chained-attestation predecessor hash (sha256[:32]).
+      -- Empty string for the genesis row. NULL allowed for legacy rows
+      -- written before this column existed.
+      prev_hash TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_mem_audit_log_action_created
@@ -753,6 +757,20 @@ export function migrateSchema(db: Database): void {
   // PERF-001: search() 内 audit_log フルスキャン対策 - action/target_type/target_id の複合インデックス
   try {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_mem_audit_log_action_target ON mem_audit_log(action, target_type, target_id)`);
+  } catch {
+    // already exists
+  }
+
+  // DDouns d2: prev_hash column on mem_audit_log (idempotent ALTER).
+  // Tracks chained-attestation predecessor for tamper-evident audit log.
+  try {
+    db.exec(`ALTER TABLE mem_audit_log ADD COLUMN prev_hash TEXT`);
+  } catch {
+    // already exists
+  }
+
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_mem_audit_log_prev_hash ON mem_audit_log(prev_hash)`);
   } catch {
     // already exists
   }

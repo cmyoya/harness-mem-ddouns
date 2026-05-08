@@ -40,7 +40,9 @@ import {
 import type { StoredEvent } from "../projector/types";
 import { runAutoLinker } from "./auto-linker.js";
 import { extractCodeProvenance } from "./provenance-extractor.js";
-import { stripPrivateBlocks } from "./privacy-tags.js";
+import { stripPrivateBlocks, stripPrivateBlocksAudited } from "./privacy-tags.js";
+import { appendAuditChain } from "./audit-chain.js";
+import { evaluateGate, resolveGateConfig } from "./ddouns-gate.js";
 import { extractEntitiesAndRelations } from "./entity-extractor.js";
 
 // ---------------------------------------------------------------------------
@@ -938,11 +940,75 @@ export class EventRecorder {
 
     const observationBase = this.buildObservationFromEvent(event, redactedPayload);
     // S78-E01: Strip <private>...</private> blocks before embedding and storage.
-    observationBase.content = stripPrivateBlocks(observationBase.content) ?? observationBase.content;
+    // DDouns d3: emit an audit row whenever a strip happens (count + sha256[:16]).
+    observationBase.content = stripPrivateBlocksAudited(observationBase.content, {
+      onStrip: (count, hashes) => {
+        try {
+          appendAuditChain(this.deps.db, "privacy_strip", "observation", `obs_${eventId}`, JSON.stringify({
+            count,
+            hashes,
+            project: normalizedProject,
+            session_id: event.session_id,
+            event_type: event.event_type,
+          }), "system");
+        } catch (err) {
+          // Audit chain MUST NOT block ingest. Log and continue.
+          // eslint-disable-next-line no-console
+          console.warn("[ddouns] privacy_strip audit emit failed:", err instanceof Error ? err.message : String(err));
+        }
+      },
+    }) ?? observationBase.content;
     const redactedContent = redactContent(observationBase.content, privacyTags);
     const observationType = this.classifyObservation(event.event_type, observationBase.title, observationBase.content);
     const memoryType = this.classifyMemoryType(event.event_type, observationBase.title, observationBase.content);
+
+    // Compute the canonical dedupe hash up-front so the substrate gate can
+    // reuse the SAME hash space the storage layer indexes (mem_observations.
+    // content_dedupe_hash). Without this, the gate's L1 dedup would never
+    // hit on real writes (W2.5 fix for hash-space mismatch).
     const contentDedupeHash = buildContentDedupeHash(event, observationType, redactedContent);
+
+    // -------------------------------------------------------------------
+    // DDouns d1: substrate gate (L1 hot path).
+    // Pattern mirrors the managed-mode fail-close at lines 917-928 above.
+    // -------------------------------------------------------------------
+    const ddounsCfg = resolveGateConfig();
+    if (ddounsCfg.enabled) {
+      const gateVerdict = evaluateGate(event, redactedContent, {
+        db: this.deps.db,
+        observationType,
+        project: normalizedProject,
+        contentDedupeHash,
+      });
+      if (gateVerdict.decision === "reject" && ddounsCfg.mode === "block") {
+        return makeErrorResponse(
+          startedAt,
+          gateVerdict.reasons.join("; "),
+          {
+            kind: "ddouns-gate",
+            reasons: gateVerdict.reasons,
+            closure_evidence: gateVerdict.closure_evidence ?? null,
+            project: normalizedProject,
+            session_id: event.session_id,
+          }
+        );
+      }
+      if ((gateVerdict.decision === "reject" || gateVerdict.decision === "warn") && (ddounsCfg.mode === "warn" || ddounsCfg.mode === "audit")) {
+        try {
+          appendAuditChain(this.deps.db, "ddouns_gate_warn", "event", eventId, JSON.stringify({
+            decision: gateVerdict.decision,
+            reasons: gateVerdict.reasons,
+            closure_evidence: gateVerdict.closure_evidence ?? null,
+            project: normalizedProject,
+            session_id: event.session_id,
+          }), "system");
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn("[ddouns] gate audit emit failed:", err instanceof Error ? err.message : String(err));
+        }
+      }
+    }
+
     const observationId = `obs_${eventId}`;
     const current = nowIso();
     let degradedEmbeddingWarning: string | null = null;

@@ -1,0 +1,39 @@
+NOTICE
+======
+
+This repository is a fork of harness-mem
+(https://github.com/Chachamaru127/harness-mem) authored by Claude Code
+Harness, distributed under the Business Source License 1.1.
+
+This fork adds DDouns Wave-1 substrate invariants — closure invariant,
+dedup gate, attestation chain, and audit-emit on privacy strip — to
+harness-mem's recordEvent path. The integration is opt-in via the
+DDOUNS_GATE_ENABLED environment variable; with the gate disabled, the
+fork is byte-identical in behavior to upstream harness-mem at the
+pinned baseline (commit 5f2f9ec).
+
+DDouns substrate code:
+  memory-server/src/core/audit-chain.ts
+  memory-server/src/core/ddouns-gate.ts
+  memory-server/src/db/migrations/0001-mem-audit-log-prev-hash.sql
+  (plus additive changes to schema.ts, privacy-tags.ts, event-recorder.ts)
+is licensed under the Apache License 2.0 by cmyoya/DDouns
+(https://github.com/cmyoya/DDouns @ spec-v1).
+
+The combined work in this fork remains under the BUSL-1.1 license of
+the upstream Licensed Work until 2029-03-08 Change Date, after which
+both subsets convert to the Apache License 2.0 per BUSL §License Grant.
+
+Per BUSL-1.1 Additional Use Grant: this fork is a substrate gate for
+write-time verification, NOT a "Memory Service" — it does not host or
+provide memory-as-a-service. The gate runs in-process inside the
+existing harness-mem daemon and has no remote/multi-tenant surface.
+
+Authors:
+  Upstream harness-mem © 2026 Claude Code Harness (BUSL-1.1)
+  DDouns substrate © 2026 cmyoya/DDouns (Apache-2.0)
+
+Specifications:
+  Wave-1 Invariants:    https://github.com/cmyoya/DDouns/blob/spec-v1/docs/spec/wave-1-invariants-v1.md
+  Companion Contract:   https://github.com/cmyoya/DDouns/blob/spec-v1/docs/spec/companion-contract-v1.md
+  Contract version:     ddouns-substrate.v1
